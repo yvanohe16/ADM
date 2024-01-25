@@ -1,0 +1,941 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+#appeler les packages necessaire pour faire tourner le script plus l'installation des outils necessaire 
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(ggplot2)
+library(treemap)
+library(treemapify)
+library(phangorn)
+library(GUniFrac)
+library(fpc)
+library(ComplexHeatmap)
+library(PCAtools)
+library(corrplot)
+library(betapart)
+library(ecodist)
+library(modEvA)
+#library(scater)
+#library(microbiomeMarker)
+```
+```{r}
+devtools::load_all("/Users/yvanohemartinier/ADM_tutoriel_dada2/course-material-main/R")
+```
+
+```{r}
+output_beta <- here::here("outputs", "beta_diversity")
+if (!dir.exists(output_beta)) dir.create(output_beta, recursive = TRUE)
+```
+#cree une variable output_beta qui contient le chemin d’accès vers un fichier. si variable n'existe pas alors la creer.
+#L’argument recursive = TRUE signifie qu’on autorise le fichier output_beta a cree des sous-dossiers
+```{r}
+file.copy(from = "course-material-main/data/asv_table", to = "data", recursive = TRUE)
+```
+#copie du dossier asv-table contenu dans le course-material-main dans le dossier data contenu dans ADM2023_tutoriel
+```{r}
+physeq <- readRDS(here::here("data","asv_table","phyloseq_object_alpha_beta_div.rds"))
+```
+#cree une variable physeq a laquelle on attribue la fonction pour lire le fichier .rds
+
+
+#deux approches pour le processus de normalisation des echentillons. La premiere: reduire le nbr d'observation en faisant un échnatillonnage (mais fait perdre des données).
+#La seconde methode emploie une analyse de données avec des ratios logarythmiques.
+
+#Première methode : mise sous forme de tableau les echantillons afin de regarder leur abondance relative.
+
+```{r}
+rowSums(physeq@otu_table@.Data)
+```
+
+```{r}
+readsumsdf <- data.frame(nreads = sort(taxa_sums(physeq), decreasing = TRUE),sorted = 1:ntaxa(physeq), type = "OTUs")
+
+tmp <- data.frame(nreads = sort(sample_sums(physeq), decreasing = TRUE), sorted = 1:nsamples(physeq), type = "Samples")
+
+readsumsdf <- rbind(readsumsdf, tmp)
+
+head(readsumsdf)
+```
+#creation d'un tableau (nreads), dans lequel les séquences sont classees par ordre decroissant d'abondance. sort = 1 : les sequences sont numerotees de 1 au nombre de taxa de physed. type = OTU : met les séquences dans des OTU.
+#meme principe pour le tableau tmp
+#fusion des deux tableaux entre eux avec rbind, et affichage des sequences les plus abondnates
+```{r}
+ggplot(readsumsdf, aes(x = sorted, y = nreads)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Total number of reads") +
+  scale_y_log10() +
+  facet_wrap(~type, nrow = 1, scales = "free")
+```
+#graphique a partir de readsmusdf et avec en x les attributions et en y le nombres de reads des sequences. L'echelle est en log de 10
+```{r}
+set.seed(10000)
+min(rowSums(physeq@otu_table@.Data))
+```
+#definit un minimun de lecture dans un echantillon
+```{r}
+physeq_rar <- rarefy_even_depth(physeq, sample.size = 800)
+rowSums(physeq_rar@otu_table@.Data) 
+physeq
+physeq_rar
+```
+# creation d'une variable avec 800 lectures d'echantillon
+
+
+#deux methodes: utilisations des ratios. D'abord transforamtion des donnees en ratio afin d'utiliser les methodes de statistique le plus fidelement possible. Pour cela, creation d'un objet tmp, qui prendra la fonction zCompositions::cmultRepl, avec method = CZM (count zero multiplicative), label = 0, z.warning = 1 utilise pour supprimer des colonnes ou des lignes incluant un exces de 0 ou de valeurs non observées. 
+#L’objet physeq_clr_asv prend la fonction apply, utilisee pour appliquer la transformation a chaque ligne de la matrice tmp. La transformation consiste a prendre le log de chaque valeur et a soustraire la moyenne du log des valeurs de la ligne respective.
+
+```{r}
+tmp <- zCompositions::cmultRepl(physeq@otu_table,
+                                method = "CZM",
+                                label = 0,
+                                z.warning = 1)
+physeq_clr_asv <- apply(tmp, 1, function(x) log(x) - mean(log(x)))
+```
+
+```{r}
+physeq_clr <- physeq
+otu_table(physeq_clr) <- otu_table(t(physeq_clr_asv),taxa_are_rows = FALSE)
+data.frame(physeq_clr@otu_table@.Data[1:5, 1:10])
+```
+#apres transformation de physeq_clr_asv en matrice, assignation de physeq a physeq_clr avec les donnees transformee
+
+
+
+
+```{r}
+library(dplyr)
+physeq_phylum <- physeq_rar %>%
+  tax_glom(taxrank = "Family") %>%                     
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% 
+  psmelt() %>%                                         
+  filter(Abundance > 0.02) %>%                         
+  arrange(Family)                                      
+
+head(physeq_phylum)
+```
+#rang taxonomique (famille) des organismes puis transformation en abondance relative. Puis classement des phylums par ordre alphabétique
+
+```{r}
+library(treemap)
+
+treemap::treemap(physeq_phylum, index=c("Class", "Family"), vSize="Abundance", type="index",
+        fontsize.labels=c(15,12),                
+        fontcolor.labels=c("white","black"),    
+        fontface.labels=c(2,1),                  
+        align.labels=list(
+          c("center", "center"), 
+          c("left", "bottom")),                 
+        overlap.labels=0.5,                      
+        inflate.labels=F, 
+        border.col=c("black","white"),          
+        border.lwds=c(4,2),
+        fontsize.title=12
+)
+```
+#Permet de visualiser la repartition des phylums grace a la fonction treemap, avec les parametres suivants: fontside.labels permet de donner la taille des étiquettes. fontcolor.labels permet de donner la couleur des étiquettes. fontface.labels permet de définir une police aux étiquettes ainsi que normal, gra, italique. align.labels permet de choisir l’alignement et la position des étiquettes. overlap.labels permet de déterminer le chevauchement des étiquettes (ici, la valeur par défaut 0,5 signifie que les étiquettes de niveau inférieur sont imprimées si les autres étiquettes ne se chevauchent pas sur plus de 0,5 fois leur taille de zone). inflate.labels permet d’obtenir des étiquettes plus grandes si le rectangle les contenant est grand. border.col permet de définir la couleur des bordures de séparations.
+
+```{r}
+tmp <- transform_sample_counts(physeq,function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  group_by(Family, Class) %>%
+  summarise(abundance = sum(Abundance)) %>%
+  na.omit()
+
+ggplot(tmp,aes(area=abundance,label=Family,fill=Class,subgroup=Class))+
+  treemapify::geom_treemap()+
+  treemapify::geom_treemap_subgroup_border() +
+  treemapify::geom_treemap_subgroup_text(place = "centre",
+                                         grow = T,
+                                         alpha = 0.5,
+                                         colour = "black",
+                                         fontface = "italic",
+                                         min.size = 0) +
+  treemapify::geom_treemap_text(colour = "white",
+                                place = "topleft",
+                                reflow = TRUE)+
+  theme(legend.position="none")
+```
+#transforme le denombrement des echantillons en abondance taxonomique puis permet de visualiser sous forme de graphique
+```{r}
+ggsave(here::here(output_beta,"treemap_treemapify.pdf"))
+```
+#sauvegarde du plot dans le dossier
+```{r}
+ggplot(physeq_phylum, aes(x = Sample, y = Abundance, fill = Family)) + 
+  geom_bar(stat = "identity") +
+  ylab("Relative Abundance (Family > 2%)") +
+  scale_y_continuous(expand = c(0,0)) + 
+  ggtitle("Community composition") +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 10,
+                                   hjust = 0.5, vjust = 0.8),
+        axis.ticks.x = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank())  
+```
+#meme principe que precedent mais avec la table des ASV
+```{r}
+ggsave(here::here(output_beta, "asv_composition.pdf"))
+```
+#permet de sauvegarder le plot dans un dossier
+
+
+#creation d'une matrice de distance via l'indice de jaccard (mesure les differences de similariite et dissimilarite)
+```{r}
+physeq_rar_jaccard <- phyloseq::distance(physeq_rar,
+                                         method = "jaccard",
+                                         binary = TRUE)
+
+physeq_rar_jaccard <- sqrt(physeq_rar_jaccard)
+```
+#utilisation de sqrt pour eviter qu'il y ai des valeurs negative du au "binary=TRUE"
+
+```{r}
+ape::is.rooted(physeq_rar@phy_tree)
+```
+#permet de vrifier si l'arbre est enraciné ou pas
+```{r}
+phy_tree(physeq_rar) <- phangorn::midpoint(physeq_rar@phy_tree)
+```
+
+```{r}
+unifracs <- GUniFrac::GUniFrac(physeq_rar@otu_table@.Data, physeq_rar@phy_tree, alpha=c(0, 0.5, 1))$unifracs
+physeq_rar_du <- unifracs[, , "d_UW"]
+```
+#permet de mesurer les distances UniFrac (5 matrices de distances)
+
+```{r}
+tmp <- transform_sample_counts(physeq,function(x) {x/sum(x)} )
+physeq_rar_bray <- phyloseq::distance(tmp, method = "bray")
+physeq_rar_dw <- unifracs[, , "d_1"]
+```
+
+```{r}
+dist_methods <- unlist(distanceMethodList)
+data.frame(position = seq_along(dist_methods),
+           dist_methods)
+```
+#permet de mesurer les distances dans phyloseq avec la fonction dist.cal
+
+```{r}
+dist_methods <- dist_methods[c(1, 2, 10, 8)]
+dist_methods
+```
+
+```{r}
+plist <- vector("list")
+for(i in dist_methods){
+  iDist <- phyloseq::distance(physeq_rar, method = i)
+  iMDS <- ordinate(physeq_rar, "MDS", distance = iDist)
+  p <- NULL
+  p <- plot_ordination(physeq_rar, iMDS, color= "Geo")
+  p <- p + ggtitle(paste("MDS using distance method ", i, sep=""))
+  plist[[i]] = p 
+}
+```
+#calcul de la matrice de distance avec distance actuelle (Idist), ordination (PCoA) via la matrice puis attribué a (iMDS)
+#avec les plots traçage des ordinations puis on enregistre les traces dans plist
+
+```{r}
+df <- plyr::ldply(plist, function(x) x$data)
+head(df)
+```
+#fusion des resultats
+```{r}
+names(df)[1] <- "distance"
+ggplot(df, aes(Axis.1, Axis.2, color = Geo)) +
+  geom_point(size=3, alpha=0.5) +
+  theme_bw() +
+  facet_wrap(~distance, scales="free") +
+  ggtitle("PCoA (MDS) on various distance metrics")
+```
+#changement de la premiere ligne de donnee et remplace par distance
+#creation de plusieurs plots avec des parametres stipulant la couleur, la transparence, l'aspect des points... chaque plot aura sa propre echelle.
+
+#groupement hierarchqiue avec la distance d'Aitchison
+
+```{r}
+physeq_clr_dist <- phyloseq::distance(physeq_clr, method = "euclidean")
+```
+#matrice pour accueillir les donnees a partir de la methode euclidienne
+
+```{r}
+spe_single <- hclust(physeq_clr_dist, method = "single")
+spe_complete <- hclust(physeq_clr_dist, method = "complete")
+spe_upgma <- hclust(physeq_clr_dist, method = "average")
+spe_ward <- hclust(physeq_clr_dist, method = "ward.D")
+
+par(mfrow = c(1, 2))
+plot(spe_single, main = "single")
+plot(spe_complete, main = "complete")
+plot(spe_upgma, main = "UPGMA")
+plot(spe_ward, main = "ward")
+```
+#groupement hierarchique sur la matrice distance sous forme de dendogramme avec chaque ligne qui représente une méthode particulière : simple agrégation, agrégation complète, arthimétique ou par parties. par(mfrow=) permet d’obtenir 2x2 graphiques.
+
+```{r}
+spe_single_coph <- cophenetic(spe_single)
+cor(physeq_clr_dist, spe_single_coph)
+spe_complete_coph <- cophenetic(spe_complete)
+cor(physeq_clr_dist, spe_complete_coph)
+spe_upgma_coph <- cophenetic(spe_upgma)
+cor(physeq_clr_dist, spe_upgma_coph)
+spe_ward_coph <- cophenetic(spe_ward)
+cor(physeq_clr_dist, spe_ward_coph)
+```
+#matrice cophenetique avec correlation de Pearson 
+#calcule de la matrice cophénétique et la corrélation des quatre résultats de clustering, au moyen de la fonction cophenetic() du package stats.
+```{r}
+plot_coph_cor <- function(cophenetic_distance, hclust_type){
+  cor_res <- round(cor(physeq_clr_dist, cophenetic_distance),3)
+  plot(x = physeq_clr_dist,
+     y = cophenetic_distance,
+     xlab = "Aitchison distance",
+     ylab = "Cophenetic distance",
+     xlim = c(10, 35), ylim = c(10, 35),
+     main = c(hclust_type, paste("Cophenetic correlation ", cor_res)))
+  abline(0, 1)
+}
+
+par(mfrow=c(1,2))
+
+plot_coph_cor(cophenetic_distance = spe_complete_coph,
+              hclust_type = "Single linkage")
+
+plot_coph_cor(cophenetic_distance = spe_complete_coph,
+              hclust_type = "Complete linkage")
+
+plot_coph_cor(cophenetic_distance = spe_upgma_coph,
+              hclust_type = "Average linkage")
+
+plot_coph_cor(cophenetic_distance = spe_ward_coph,
+              hclust_type = "Ward linkage")
+```
+#plot pour illustrer la relation entre une matrice de distance et un ensemble de matrices cophenetiques permet de faire un tracer entre les distances origanales par rapport aux distances des matrices cophenetiques
+
+```{r}
+par(mfrow = c(1, 1))
+
+plot(x = spe_upgma$height,
+     y = phyloseq::nsamples(physeq_clr):2,
+     type = "S",
+     main = "Fusion levels - Aitchison - Average",
+     ylab = "k (number of cluster)",
+     xlab = "h (node height)")
+
+text(x = spe_upgma$height,
+     y = phyloseq::nsamples(physeq_clr):2,
+     labels = phyloseq::nsamples(physeq_clr):2,
+     col = "red",
+     cex = 0.8)
+```
+#permet d'interpreter et comparer les resultats des cluster, valeurs de dissimilarite= fusion entre deux branches
+
+```{r}
+install.packages("NbClust", lib = ".")
+library("NbClust", lib.loc = ".")
+nclust <- nb_clust_all(data = t(physeq_clr_asv), seed = 1000)
+```
+#packages NbClust pour calculer les 24 indices qui confirme le bon nbr de clusters et confirme l'identification de deux groupes d'echantillons.
+
+```{r}
+k <- 2
+spe_upgma_clust <- cutree(tree = spe_upgma, k = k)
+table(spe_upgma_clust)
+```
+#decoupe du dendrogramme cree par clustering hierarchique en groupes k, puis on examine la composition de ces groupes à l’aide de la fonction table.
+
+```{r}
+spe_upgma_clust2 <- data.frame(UPGMA_clusters = spe_upgma_clust)
+```
+
+```{r}
+plot(spe_upgma,
+     hang = -1,
+     ylab = "Height",
+     main="Aitchison distance - UPGMA")
+
+rect.hclust(spe_upgma,
+            k = k,
+            border = 2:6,
+            cluster = spe_upgma_clust)
+
+legend("topright",
+       paste("Cluster", 1:k),
+       pch = 22,
+       col = 2:(k + 1),
+       bty = "n")
+```
+#traçage du dendogramme avec les differents groupes
+
+#les lignes suivantes permettent de mesurer la robusteus de l'algorithme de clustering. Avecl’indice de Dunn (rapport de la plus petite distance inter-cluster a la plus grande distance intra-cluster), l’indice Davis-Bouldin et l’indice Silhoutte
+```{r}
+cs <- fpc::cluster.stats(d = physeq_clr_dist,
+                         clustering = spe_upgma_clust)
+
+cs$dunn
+```
+#L’indice de Dunn est élevé, ce qui indique un bon regroupement des échantillons
+
+
+```{r}
+pourcentS <- phyloseq::transform_sample_counts(physeq_rar, function(x) x/sum(x) * 100)
+mytop30 <- names(sort(phyloseq::taxa_sums(pourcentS), TRUE)[1:30])
+selection30 <- phyloseq::prune_taxa(mytop30, pourcentS)
+selection30
+```
+#permet de concentrer les 30 taxons les plus abondants et de les transformers en pourcentage
+```{r}
+selection30_asv <- phyloseq::otu_table(selection30)
+selection30_sample <- phyloseq::sample_data(selection30)
+rownames(selection30_asv)
+```
+#permet d'extraient les informations specifiques concernant les abondances des OTU et les metadonnees associees a l'ensemble de donnees restreint a 30 taxons les plus abondants
+```{r}
+sample_new_names <- paste(selection30_sample$SampName,
+                          selection30_sample$Description,
+                          sep = "_")
+heat <- t(base::scale(selection30_asv))
+head(data.frame(heat))
+```
+#permet de creer de nouveaux noms d'echantillons, standardisent les donnees de l'OTU, et affichent les premieres lignes du resultat sous forme de tableau
+```{r}
+ComplexHeatmap::Heatmap(
+  heat,
+  row_names_gp = grid::gpar(fontsize = 6),
+  cluster_columns = FALSE,
+  heatmap_legend_param = list(direction = "vertical",
+                              title = "Z-scores", 
+                              grid_width = unit(0.5, "cm"),
+                              legend_height = unit(3, "cm"))
+)
+```
+#genere une heatmap, avec des parametres pour la legende (sa palce, son orientation)
+```{r}
+taxon <- phyloseq::tax_table(selection30) |>
+  as.data.frame()
+myname <- paste(rownames(taxon), taxon$Phylum, taxon$Family, sep="_")
+colnames(selection30_asv) <- myname
+```
+```{r}
+heat <- t(scale(selection30_asv))
+
+my_top_annotation <- ComplexHeatmap::anno_block(gp = grid::gpar(fill =c(3,4)),
+                                               labels = c(1, 2),
+                                               labels_gp = grid::gpar(col = "white",
+                                                                      fontsize = 10))
+
+ComplexHeatmap::Heatmap(
+  heat,
+  row_names_gp = grid::gpar(fontsize = 6),
+  cluster_columns =TRUE,
+  heatmap_legend_param = list(direction = "vertical",
+   title ="Z-scores",
+   grid_width = unit(0.5, "cm"),
+   legend_height = unit(4, "cm")),
+  top_annotation = ComplexHeatmap::HeatmapAnnotation(foo = my_top_annotation),
+  column_km = 2,
+  column_names_gp= grid::gpar(fontsize = 6)
+  )
+```
+# permet derajouter sur la heatma des donnees standardisees et diverses annotations et parametres de personnalisation pour l'aspect visuel du graphique
+```{r}
+boxplot <- ComplexHeatmap::anno_boxplot(t(selection30_asv), 
+                                        which = "row",
+                                        gp = grid::gpar(fill = "turquoise3"))
+
+my_boxplot_left_anno <- ComplexHeatmap::HeatmapAnnotation(Abund = boxplot,
+                                                          which = "row",
+                                                          width = unit(3, "cm"))
+
+my_top_anno <- ComplexHeatmap::anno_block(gp = grid::gpar(fill = c(3, 6)),
+                                          labels = c("South", "North"),
+                                          labels_gp = grid::gpar(col = "white",
+                                                                fontsize = 10))
+
+my_top_anno <- ComplexHeatmap::HeatmapAnnotation(foo = my_top_anno)
+
+ComplexHeatmap::Heatmap(
+  heat,
+  row_names_gp = grid::gpar(fontsize = 7),
+  left_annotation = my_boxplot_left_anno, 
+  heatmap_legend_param = list(direction = "vertical",
+                              title ="Z-scores",
+                              grid_width = unit(0.5, "cm"),
+                              legend_height = unit(3, "cm")),
+  top_annotation = my_top_anno,
+  column_km = 2,
+  cluster_columns = TRUE,
+  column_dend_side = "bottom",
+  column_names_gp = grid::gpar(fontsize = 7)
+  )
+```
+#genre un bloxplot pour chaque ligne de seection30_asv qui montre la distribution de l'abondance. Affiche les box plots a gauche de la heatmap, puis genere une heat map avec toutes les informations
+
+
+#analyse en composantes prinicpale PCoA. Distance Aitchinson
+```{r}
+tax_CLR <-  as.data.frame(tax_table(physeq_clr)) 
+ASVname <- paste(rownames(tax_CLR), tax_CLR$Family, tax_CLR$Genus,sep="_")
+rownames(physeq_clr_asv) <- ASVname
+p <- PCAtools::pca(physeq_clr_asv,
+                   metadata = data.frame(sample_data(physeq_clr)))
+PCAtools::screeplot(p, axisLabSize = 18, titleLabSize = 22)
+```
+#La table de physeq_clr est extraite pour etre transformee en data frame. Ensuite, l'objet ASVname est cree en concatenant les noms de lignes actuels avec la famille et le genre de chaque taxon. Cela permet de renommer les lignes de physeq_clr_asv. Ensuite, la PCoA est realisee sur physeq_clr_asv, et les donnees associees a chaque echantillon de physeq_clr sont integrees. Enfin, les resultats sont visualises par un screeplot, ce qui permet de determiner le nombre de composantes a considerer
+```{r}
+horn <- PCAtools::parallelPCA(physeq_clr_asv)
+horn$n
+```
+#test de horn qui determine le nbr de composantes a conserver en comparant la variance de chaque composante principlae a celle obtenue a partir de jeux de donnes aleatoires
+```{r}
+elbow <- PCAtools::findElbowPoint(p$variance)
+elbow
+```
+#test de Elbow qui identifie le point ou l’ajout de composantes supplementaires n’est pas significatif
+```{r}
+PCAtools::biplot(
+  p,
+  lab = p$metadata$SampName,
+  colby = "Geo",
+  pointSize = 5,
+  hline = 0, vline = 0,
+  legendPosition = "right"
+)
+```
+# La fonction biplot affcihe les scores des echantillons et les vecteurs de chargement des variables. Les points representant les echantillons seront etiquettes avec les noms des echantillons contenus dans p$meta. Puis ajout des parametres pour l'aspect du plot
+```{r}
+PCAtools::biplot(
+  p, 
+  showLoadings = TRUE,
+  lengthLoadingsArrowsFactor = 1.5,
+  sizeLoadingsNames = 3,
+  colLoadingsNames = 'red4',
+  ntopLoadings = 3,
+  lab = p$metadata$X.SampleID,
+  colby = "Geo",
+  hline = 0, vline = 0,
+  legendPosition = "right"
+)
+```
+#meme chose mais avec des parametres supplementaire. Les vecteurs de chargement donnent une indication de l'importance de la direction de chaque variable dans l'espace des composantes principales (CP). La longueur des flèches est augmentée de 50%. La taille des étiquettes pour les noms des vecteurs de chargement est de 3 et ils sont colorés en rouge. Seuls les 3 vecteurs de chargements les plus importants sont affichés. Ensuite, les échantillons sont étiquetés avec leur valeur de X.SampleID
+```{r}
+PCAtools::eigencorplot(
+  p,
+  components = PCAtools::getComponents(p, 1:horn$n),
+  metavars = c('SiOH4','NO2','NO3','NH4','PO4',
+              'NT','PT','Chla',"T", "S", "Sigma_t"),
+  col = c('white', 'cornsilk1', 'gold',
+          'forestgreen', 'darkgreen'),
+  cexCorval = 1.2,
+  fontCorval = 2,
+  posLab = "all",
+  rotLabX = 45,
+  scale = TRUE,
+  main = bquote(PC ~ Spearman ~ r^2 ~ environmental ~ correlates),
+  plotRsquared = TRUE,
+  corFUN = "spearman",
+  corUSE = "pairwise.complete.obs",
+  corMultipleTestCorrection = 'BH',
+  signifSymbols = c("****", "***", "**", "*", ""),
+  signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1)
+)
+```
+#visualisation des correlations entre les principales composantes d'une PCoA et certaines variables environnementales ou donnes.components : composantes definies par les resultats du test de Horn. metavars : liste des variables environnementales pour lesquelles les correlations seront calculees
+```{r}
+pcoa_asv <- ape::pcoa(physeq_rar_bray)
+pcoa_coord <- pcoa_asv$vectors[, 1:2]
+
+hull <- data.frame("Axis.1" = pcoa_coord[, 1],
+                   "Axis.2" = pcoa_coord[, 2],
+                   "sample" = as.data.frame(sample_data(physeq_rar@sam_data)))
+hull_col <- c("#a65628","#1919ff")
+names(hull_col) <- c("North","South")
+
+hull_data <- hull %>%
+  dplyr::group_by(sample.Geo) %>%
+  dplyr::slice(chull(Axis.1,Axis.2)) %>%
+  dplyr::mutate(color = hull_col[sample.Geo])
+
+head(hull_data)
+```
+#analyse PCoA avec les distances de Bray_Curtis a partir de physeq_rar_bray
+```{r}
+ggplot(data = hull, aes(x = Axis.1, y = Axis.2)) +
+  geom_hline(yintercept = 0, colour = "lightgrey", linetype = 2) +
+  geom_vline(xintercept = 0, colour = "lightgrey", linetype = 2) +
+  geom_polygon(data = hull_data,
+               aes(group = sample.Geo,
+                   fill = sample.Geo),
+               alpha = 0.3) + # add the convex hulls)
+  scale_fill_manual(values = c("Darkgrey", "#1919ff")) +
+  geom_point(data = hull,
+             aes(color = sample.Geo,
+                 size = sample.S),
+             alpha = 0.7) +
+  scale_color_manual(values = c("Darkgrey", "#1919ff")) +
+  xlab(paste("PCo1 (", round(pcoa_asv$values$Relative_eig[1]*100, 1), "%)")) +
+  ylab(paste("PCo2 (", round(pcoa_asv$values$Relative_eig[2]*100, 1), "%)")) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.title.x = element_text(size = 14), # remove x-axis labels
+        axis.title.y = element_text(size = 14), # remove y-axis labels
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(),  #remove major-grid labels
+        panel.grid.minor = element_blank(),  #remove minor-grid labels
+        plot.background = element_blank())
+```
+#visualisation des resultats de a PCoA sous forme de plot, repartition des echantillons dans l'espace bidimensionnel des deux premieres composantes principales ainsi que leurs repartition en fonction des categories nord et sud
+```{r}
+physeq_clr_nmds <- vegan::metaMDS(physeq_clr_dist, k=2, trymax=100) #Aitchison distance
+```
+#analyse NMDS sur distances de physeq_clr_dist avec le package vegan, test sur 100 configurations pour trouver la meilleure puis stocke les resultats dans physeq_clr_nmds
+```{r}
+vegan::stressplot(physeq_clr_nmds)
+```
+#fonction stressplot permet de visualiser le niveau de stress de l’analyse, avec le niveau de stress associe a cette configuration
+```{r}
+nmds_coord <- data.frame(physeq_clr_nmds$points)
+hull <- data.frame("Axis.1" = nmds_coord[,1],
+                   "Axis.2" = nmds_coord[,2],
+                   "sample" = as.data.frame(sample_data(physeq_clr@sam_data))
+
+hull_col <- c("#a65628","#1919ff")
+names(hull_col) <- c("North","South")
+
+hull_data <- hull %>%
+  dplyr::group_by(sample.Geo) %>%
+  dplyr::slice(chull(Axis.1,Axis.2)) %>%
+  dplyr::mutate(color = hull_col[sample.Geo])
+ggplot(hull,aes(x = Axis.1, y = Axis.2)) +
+  geom_hline(yintercept = 0, colour = "lightgrey", linetype = 2) + 
+  geom_vline(xintercept = 0, colour = "lightgrey", linetype = 2) +
+  geom_polygon(data = hull_data,
+               aes(group = sample.Geo,
+                   fill = sample.Geo),
+               alpha = 0.3) + # add the convex hulls)
+  scale_fill_manual(values = c("Darkgrey", "#1919ff")) +
+  geom_point(data = hull,
+             aes(color = sample.Geo,
+                 size = sample.S),
+             alpha = 0.7) +
+  scale_color_manual(values = c("Darkgrey", "#1919ff")) +
+  geom_text(data = hull_data,
+            x = -0, y = -9,
+            label = paste("Stress =", round(physeq_clr_nmds$stress, 2)),
+            colour = "Black",
+            size = 5)  +
+  xlab(paste("MDS1")) +
+  ylab(paste("MDS2")) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.title.x = element_text(size=14), 
+        axis.title.y = element_text(size=14),
+        panel.background = element_blank(), 
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank(),  
+        plot.background = element_blank())
+```
+#visualisation des resultats de l'analyse NMDS,avec l'ajout des informations sur les axes principaux ainsi que les parties nord et sud
+```{r}
+data.frame(names(hull))
+```
+#compare la correspondance entre les coordonnees NMDS et les variables environnementales
+```{r}
+env <- hull[, 13:23],
+ef <- vegan::envfit(physeq_clr_nmds, env, permu = 1000),
+ef
+```
+
+```{r}
+plot(physeq_clr_nmds, type = "t", display = "sites")
+plot(ef, p.max = 0.05)
+```
+
+
+#test permanova qui evalue si la variable geo a un effet significatif sur la structure des communautes microbiennes representees par les distances dans physeq_clr_dist. Se sert des resultats de l'analyse pour determiner si si les differences observees entre les groupes definis par la variable Geo sont statistiquement significatives
+```{r}
+metadata <- data.frame(sample_data(physeq_clr))
+results_permanova <- vegan::adonis2(physeq_clr_dist ~ Geo,
+                                    data = metadata,
+                                    perm = 1000)
+results_permanova
+```
+
+```{r}
+anova(vegan::betadisper(physeq_clr_dist, metadata$Geo))
+```
+#determiner s'il y a des differences significatives dans la dispersion des donnees entre les groupes definis par la variable "Geo"
+```{r}
+permanova <- vegan::adonis(t(physeq_clr_asv) ~ Geo,
+                            data = metadata,
+                            permutations = 1000,
+                            method = "euclidean")
+
+coef <- coefficients(permanova)["Geo1",]
+
+top.coef <- coef[rev(order(abs(coef)))[1:10]]
+
+par(mar = c(3, 14, 2, 1))
+
+barplot(sort(top.coef),horiz = TRUE, las = 1,main = "Top taxa",cex.names = 0.7)
+```
+#une analyse PERMANOVA sur les donnees transformees physeq_clr_asv pour tester si la structure des communautes microbiennes differe significativement entre les groupes definis par Geo. Affiche les 10 ASV les plus contributifs a ces differences, sous forme d'un graphique a barres horizontales
+```{r}
+permanova_S <- vegan::adonis2(physeq_clr_dist ~ S,data = metadata,perm = 1000)
+permanova_S
+```
+
+```{r}
+permanova_NH4 <- vegan::adonis2(physeq_clr_dist ~ NH4,data = metadata,perm = 1000)
+permanova_NH4
+```
+
+```{r}
+permanova_PT <- vegan::adonis2(physeq_clr_dist ~ PT,data = metadata,perm = 1000)
+permanova_PT
+```
+#test permanova sur S, NH4 et PT
+```{r}
+permanova_all <- vegan::adonis2(physeq_clr_dist ~ SiOH4 + NO2 + NO3 + NH4 + PO4 + NT + PT + Chla + T + S + Sigma_t,by="margin", data=metadata,perm=1000)
+
+permanova_all
+```
+
+```{r}
+cor_metadadata <- cor(metadata[, 11:21], method = "spearman")
+
+cor_mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p_mat <- matrix(NA, n, n)
+  diag(p_mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], method = "spearman", ...)
+      p_mat[i, j] <- p_mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p_mat) <- rownames(p_mat) <- colnames(mat)
+  p_mat
+}
+p_mat <- cor_mtest(metadata[, 11:21])
+
+corrplot::corrplot(cor_metadadata,type = "upper",order = "hclust", p.mat = p_mat,sig.level = 0.05,insig = "blank")
+```
+#calcule de la matrice de correlation de spearman, puis visualisatoin avec un corrplot qui permet d'afficher seulement les correlations significatives 
+```{r}
+permanova_cor_pars <- vegan::adonis2(physeq_clr_dist ~ S + NO3 + NT + Chla + T,by = "margin",data = metadata,perm = 1000)
+permanova_cor_pars
+```
+#analyse permanova  pour evaluer l’effet de plusieurs variables environnementales (S, NO3, NT, Chla, T) sur la structure des communautes microbiennes representee par les distances dans physeq_clr_dist. Puis affiche les resultats
+```{r}
+vegan::anosim(physeq_clr_dist, metadata$Geo, permutations = 1000)
+```
+#test si les differences entre les groupes definis par la variable "Geo" sont plus grandes que ce qui est attendu par hasard, etant donne les distances ou dissimilarites entre les echantillons dans "physeq_clr_dist". Si le resultat est significatif, cela suggere que la variable "Geo" a un effet sur la structure des communautes microbiennes.
+
+#analyse de la redondance pour explorer les relations entre la strucutue des communuates  dans physeq_clr_asv et un ensemble de variables environnementales contenues dans certaines colonnes de metadata. Affiche ensuite un resume des premiers resultats de cette analyse.
+```{r}
+spe_rda <- vegan::rda(t(physeq_clr_asv) ~ .,
+                      metadata[, 11:21])
+head(summary(spe_rda))  
+```
+
+```{r}
+R2 <- vegan::RsquareAdj(spe_rda)$r.squared
+R2
+```
+
+```{r}
+R2adj <- vegan::RsquareAdj(spe_rda)$adj.r.squared
+R2adj
+```
+#calcul du coefficiant de determination R2, coefficient indiquent la proportion de la variance dans les donnees de la communaute microbiologique qui est expliquee par les variables environnementales utilisees dans la RDA.
+```{r}
+anova(spe_rda, step = 1000)
+```
+#test annova sur les resultats de la redondance pour evaluer la significativité des axes et du modele
+#test sur l'ensemble du modele 
+```{r}
+anova(spe_rda, by = "axis", step = 1000)
+```
+#test par axes
+```{r}
+vegan::vif.cca(spe_rda)
+```
+
+```{r}
+step_forward <- vegan::ordiR2step(vegan::rda(t(physeq_clr_asv) ~ 1, data = metadata[, 11:21]),scope = formula(spe_rda), direction = "forward",pstep = 1000)
+```
+#calcul des facteurs d'inflation de la variance pour evaluer la multicollinearite entre les variables environnementales utilisees dans la RDA et on realise une selection sequentielle de variables (stepwise) en utilisant une methode orientee vers l’avant (forward) pour determiner quelles variables environnementales contribuent de maniere significative a la structure des communautes microbiennes
+```{r}
+spe_rda_pars <- vegan::rda(t(physeq_clr_asv) ~ S, data = metadata[, 11:21])
+anova(spe_rda_pars, step = 1000)
+```
+
+```{r}
+anova(spe_rda_pars, step = 1000, by = "axis")
+```
+#test anavo
+```{r}
+R2adj_pars <- vegan::RsquareAdj(spe_rda_pars)$adj.r.squared
+vegan::vif.cca(spe_rda)
+```
+#calcule puis stocke le coefficient de détermination R2 et R2 ajuste pour les resultats de l’Analyse de la Redondance (RDA) basee sur la variable “S”.
+```{r}
+vegan::vif.cca(spe_rda_pars)
+```
+#calcule les facteurs d’inflation de la variance (VIF) pour evaluer la multicollinearite entre les variables environnementales de l’analyse RDA originale
+```{r}
+ii <- summary(spe_rda_pars)
+sp <- as.data.frame(ii$species[, 1:2]) * 2
+sp_top <- sp[order(abs(sp$RDA1), decreasing = TRUE), ][1:6, ]
+
+st <- as.data.frame(ii$sites[, 1:2])
+st <- merge(st,
+      metadata["Geo"],
+      by = "row.names")
+
+yz <- t(as.data.frame(ii$biplot[, 1:2]))
+row.names(yz) <- "Salinity"
+yz <- as.data.frame(yz)
+
+eigen_values <- format(100 *ii$cont[[1]][2,], digits=4)
+ggplot() +
+  geom_point(data = st, linewidth = 4,
+             aes(x = RDA1, y = PC1,
+                 shape = Geo, fill = Geo)) +
+  scale_shape_manual(values = c(21:25)) +
+  geom_segment(data = sp_top,
+               arrow = arrow(angle = 22.5,
+                             length = unit(0.35, "cm"),
+                             type = "closed"),
+               linetype = 1, linewidth = 0.6, colour = "red",
+               aes(x = 0, y = 0, xend = RDA1, yend = PC1)) +
+  ggrepel::geom_text_repel(data = sp_top,
+                           aes(x = RDA1, y = PC1, label = row.names(sp_top))) +
+  geom_segment(data = yz,
+               arrow = arrow(angle = 22.5,
+                             length = unit(0.35,"cm"),
+                             type = "closed"),
+               linetype = 1, linewidth = 0.6, colour = "blue",
+               aes(x = 0, y = 0, xend = RDA1, yend = PC1)) +
+  ggrepel::geom_text_repel(data = yz, aes(RDA1, PC1, label=row.names(yz)))+
+  labs(x = paste("RDA 1 (", eigen_values[1], "%)", sep = ""),
+       y = paste("PC 1 (", eigen_values[2], "%)", sep = ""))+
+  geom_hline(yintercept = 0,linetype = 3,linewidth = 1) + 
+  geom_vline(xintercept = 0,linetype = 3,linewidth = 1)+
+  guides(shape = guide_legend(title = NULL,
+         color = "black"),
+         fill = guide_legend(title = NULL))+
+  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+#plot pour visualiser la position des echantillons dans l'espace RDA avec également l'impact de la salinité sur la strucuture des communuates. le plot permet de comprendre cet impact ainsi que le regroupement des communauté en fontion de la variable Geo
+```{r}
+ANF_km <- readRDS(here::here("data","beta_diversity","spatial_distance.rds"))
+ANF_km_dist <- dist(ANF_km)
+```
+#calcul de matrice 
+```{r}
+ANF_decay_exp <- betapart::decay.model(physeq_clr_dist/100,ANF_km_dist, y.type="dissim",model.type="exp",perm=100)
+plot(ANF_km_dist, physeq_clr_dist/100,
+     ylim=c(0, max(physeq_clr_dist/100)),
+     xlim=c(0, max(ANF_km_dist)),
+     xlab = "Distance (km)", ylab = "Dissimilarity (CLR)")
+
+betapart::plot.decay(ANF_decay_exp, col = "blue",
+                     remove.dots = TRUE, add = TRUE)
+
+legend("bottomright" paste("exp: (Beta =",round(ANF_decay_exp$second.parameter, 4), ", Rsqr =", round(ANF_decay_exp$pseudo.r.squared, 2),", p =", round(ANF_decay_exp$p.value, 2)),
+       fill = "blue")
+```
+#analyse decroisssante de dissimiliraté, utilisation du modele exponentiel de decroissance, plot de dispersion spatiale par rapport a la dissimilirate dans le but de comprendre si plus les echantillons sont eloignes dans l'espace estce qu'ils sont aussi plus dissimilaires ecologiquement
+```{r}
+physeq_clr_dist_square <- phyloseq::distance(physeq_clr,method = "euclidean",diag = TRUE, upper = TRUE)
+ANF_km_dist_square <- dist(ANF_km, diag = TRUE, upper = TRUE)
+envdata <- dist(metadata[,11:21], diag = TRUE, upper = TRUE)
+```
+#analyse de Mantel avec une matrice de calcul euclidienne, pour determiner dans quelle mesure les variables environnementales et spatiales influencent conjointement la structure des communautes microbiennes
+```{r}
+ecodist::MRM(physeq_clr_dist_square ~ envdata + ANF_km_dist_square, nperm=1000)
+```
+#
+```{r}
+ecodist::MRM(physeq_clr_dist_square ~ envdata, nperm=1000) 
+```
+
+```{r}
+ecodist::MRM(physeq_clr_dist_square ~ ANF_km_dist_square, nperm=1000) 
+```
+
+```{r}
+modEvA::varPart(A = 0.212, B = 0.238, AB = 0.366,A.name = "Environmental",B.name = "Dispersal limitation")
+```
+
+#analyse LEfSe sur les donnees phylogenetiques fournies par physeq. La fonction run_lefse du package microbiomeMarker est utilisee pour identifier les ASV qui sont statistiquement differentes entre les groupes definis par la variable “Geo”. La normalisation est faite en utilisant la methode “Counts Per Million” (CPM). Des seuils specifiques sont definis pour les tests de Wilcoxon et Kruskal-Wallis. L’analyse est configuree pour identifier des marqueurs dans des groupes multiples et un seuil pour la taille de l’effet est defini. Les resultats de l’analyse LEfSe sont ensuite convertis en une dataframe pour faciliter l’affichage et la manipulation. L’objectif est d’identifier quels microorganismes sont significativement associes a chacun des groupes definis par la variable “Geo”.
+```{r}
+mm_lefse <- microbiomeMarker::run_lefse(physeq, norm = "CPM", wilcoxon_cutoff = 0.01, group = "Geo",taxa_rank = "none",kw_cutoff = 0.01,multigrp_strat = TRUE,lda_cutoff = 4)
+
+mm_lefse_table <- data.frame(mm_lefse@marker_table)
+mm_lefse_table
+```
+
+```{r}
+p_LDAsc <- microbiomeMarker::plot_ef_bar(mm_lefse)
+y_labs <- ggplot_build(p_LDAsc)$layout$panel_params[[1]]$y$get_labels()
+p_abd <- microbiomeMarker::plot_abundance(mm_lefse, group = "Geo") +
+  scale_y_discrete(limits = y_labs)
+```
+#genere deux plots bases sur les resultats de l'analyse LEfSe. plot_ef_bar cree un graphique a barres montrant la taille de l’effet (LDA score) pour chaque ASV identifié comme etant significativement different entre les groupes. Plus la barre est haute (ou basse), plus la difference est marquee. plot_abundance genere un graphique a barres empilees montrant l’abondance relative des microorganismes identifies comme marqueurs entre les differents groupes definis par la variable “Geo”. grid.arrange combine et affiche ces deux graphiques côte à côte pour une comparaison visuelle.
+```{r}
+gridExtra::grid.arrange(p_LDAsc, p_abd, nrow = 1)
+```
+
+```{r}
+mm_ancombc <- run_ancombc_patched(
+  physeq,
+  group = "Geo",
+  taxa_rank = "none",
+  pvalue_cutoff = 0.001,
+  p_adjust = "fdr"
+)
+```
+
+```{r}
+mm_ancombc_table <- data.frame(mm_ancombc@marker_table)
+mm_ancombc_table
+```
+
+```{r}
+an_ef <- microbiomeMarker::plot_ef_bar(mm_ancombc)
+y_labs <- ggplot_build(an_ef)$layout$panel_params[[1]]$y$get_labels()
+an_abd <- microbiomeMarker::plot_abundance(mm_ancombc, group = "Geo") +
+  scale_y_discrete(limits = y_labs)
+```
+
+```{r}
+gridExtra::grid.arrange(an_ef, an_abd, nrow = 1)
+```
+
+```{r}
+mm_aldex <- microbiomeMarker::run_aldex(physeq, group = "Geo",
+                                        norm = "CPM",
+                                        taxa_rank = "none",
+                                        p_adjust = "fdr")
+```
+#utilisee pour identifier les asv qui sont satistiquement differents entre les groupes definis par la variable Geo. Normalisiation effectuee par la methode "counts per million".La correction pour les tests multiples est realisee en utilisant la methode FDR (False Discovery Rate). Les resultats de l’analyse ALDEx2 sont ensuite convertis en une dataframe pour faciliter l’affichage et la manipulation.
+```{r}
+mm_aldex_table <- data.frame(mm_aldex@marker_table)
+mm_aldex_table
+```
+
